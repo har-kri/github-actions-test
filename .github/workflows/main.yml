@@ -24,7 +24,7 @@ jobs:
       - name: Check if User is in dev1 Team (Only for PRD)
         id: check-team
         env:
-          GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}  # Using Classic PAT with read:org
+          GH_TOKEN: ${{ secrets.new12 }}  # Using Classic PAT with read:org
           ORG_NAME: "har-kri"  # Replace with your actual org name
           TEAM_SLUG: "dev1"  # Replace with your correct team slug
         run: |
