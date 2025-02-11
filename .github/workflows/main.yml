@@ -25,7 +25,7 @@ jobs:
         id: check-team
         env:
           GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}  # Use a PAT, not GITHUB_TOKEN
-          ORG_NAME: "my-org"  # Replace with your GitHub organization name
+          ORG_NAME: "har-kri"  # Replace with your GitHub organization name
           TEAM_SLUG: "dev1"  # Replace with your GitHub team name (slug)
         run: |
           RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
