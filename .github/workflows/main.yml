@@ -13,20 +13,20 @@ on:
           - 'dev'
           - 'stg'
           - 'uat'
-          - 'prd'
+          - 'prd'      
 
 jobs:
   validate-access:
     runs-on: ubuntu-latest
     outputs:
-      is_dev1_member: ${{ steps.check-team.outputs.is_dev1_member }}
+      is_member: ${{ steps.check-team.outputs.is_member }}
     steps:
-      - name: Check if User is in dev1 Group
+      - name: Check if User is in dev1 Team
         id: check-team
         env:
-          GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}  # Use a PAT, not GITHUB_TOKEN
-          ORG_NAME: "har-kri"  # Replace with your GitHub organization name
-          TEAM_SLUG: "dev1"  # Replace with your GitHub team name (slug)
+          GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}  # Using Classic PAT with read:org
+          ORG_NAME: "har-kri"  # Replace with your GitHub Organization name
+          TEAM_SLUG: "dev1"  # Replace with your Team slug
         run: |
           RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: token $GH_TOKEN" \
@@ -34,26 +34,20 @@ jobs:
             https://api.github.com/orgs/$ORG_NAME/teams/$TEAM_SLUG/memberships/${{ github.actor }})
 
           if [[ "$RESPONSE" == "200" ]]; then
-            echo "✅ User $GITHUB_ACTOR is in dev1 group"
-            echo "is_dev1_member=true" >> $GITHUB_ENV
-            echo "is_dev1_member=true" >> $GITHUB_OUTPUT
+            echo "User is in the dev1 team ✅"
+            echo "is_member=true" >> $GITHUB_ENV
+            echo "is_member=true" >> $GITHUB_OUTPUT
           else
-            echo "❌ User $GITHUB_ACTOR is NOT in dev1 group"
-            echo "is_dev1_member=false" >> $GITHUB_ENV
-            echo "is_dev1_member=false" >> $GITHUB_OUTPUT
+            echo "❌ User $GITHUB_ACTOR is NOT in dev1 team!"
+            echo "is_member=false" >> $GITHUB_ENV
+            echo "is_member=false" >> $GITHUB_OUTPUT
+            exit 1  # ❗ Fails the job if the user is not in dev1
           fi
 
   deploy:
     runs-on: ubuntu-latest
     needs: validate-access
-    if: ${{ inputs.environment != 'prd' || needs.validate-access.outputs.is_dev1_member == 'true' }}
     steps:
-      - name: Prevent Unauthorized PRD Deployment
-        if: ${{ inputs.environment == 'prd' && needs.validate-access.outputs.is_dev1_member != 'true' }}
-        run: |
-          echo "❌ User $GITHUB_ACTOR is not allowed to deploy to PRD."
-          exit 1
-
       - name: Checkout Code
         uses: actions/checkout@v4
 
