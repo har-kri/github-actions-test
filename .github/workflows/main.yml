@@ -21,13 +21,20 @@ jobs:
     outputs:
       is_member: ${{ steps.check-team.outputs.is_member }}
     steps:
-      - name: Check if User is in dev1 Team
+      - name: Check if User is in dev1 Team (Only for PRD)
         id: check-team
         env:
           GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}  # Using Classic PAT with read:org
           ORG_NAME: "har-kri"  # Replace with your GitHub Organization name
           TEAM_SLUG: "dev1"  # Replace with your Team slug
         run: |
+          if [[ "${{ inputs.environment }}" != "prd" ]]; then
+            echo "Skipping team check since environment is not PRD ✅"
+            echo "is_member=true" >> $GITHUB_ENV
+            echo "is_member=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
           RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: token $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
@@ -38,16 +45,22 @@ jobs:
             echo "is_member=true" >> $GITHUB_ENV
             echo "is_member=true" >> $GITHUB_OUTPUT
           else
-            echo "❌ User $GITHUB_ACTOR is NOT in dev1 team!"
+            echo "❌ User $GITHUB_ACTOR is NOT in dev1 team and cannot deploy to PRD!"
             echo "is_member=false" >> $GITHUB_ENV
             echo "is_member=false" >> $GITHUB_OUTPUT
-            exit 1  # ❗ Fails the job if the user is not in dev1
+            exit 1  # ❗ Fails the job only if the user selects PRD and is not in dev1
           fi
 
   deploy:
     runs-on: ubuntu-latest
     needs: validate-access
     steps:
+      - name: Prevent Unauthorized PRD Deployment
+        if: ${{ inputs.environment == 'prd' && needs.validate-access.outputs.is_member == 'false' }}
+        run: |
+          echo "❌ User $GITHUB_ACTOR is not allowed to deploy to PRD."
+          exit 1  # Fails the deployment step if user is unauthorized for PRD
+
       - name: Checkout Code
         uses: actions/checkout@v4
 
