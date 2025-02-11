@@ -15,6 +15,23 @@ on:
           - 'uat'
           - 'prd'      
 
+name: Run Python Script
+run-name: DB Snapshot (${{ inputs.environment }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment'
+        type: choice
+        default: 'dev'
+        required: true
+        options:
+          - 'dev'
+          - 'stg'
+          - 'uat'
+          - 'prd'      
+
 jobs:
   validate-access:
     runs-on: ubuntu-latest
@@ -25,8 +42,8 @@ jobs:
         id: check-team
         env:
           GH_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}  # Using Classic PAT with read:org
-          ORG_NAME: "har-kri"  # Replace with your GitHub Organization name
-          TEAM_SLUG: "dev1"  # Replace with your Team slug
+          ORG_NAME: "har-kri"  # Replace with your actual org name
+          TEAM_SLUG: "dev1"  # Replace with your correct team slug
         run: |
           if [[ "${{ inputs.environment }}" != "prd" ]]; then
             echo "Skipping team check since environment is not PRD ✅"
@@ -35,20 +52,24 @@ jobs:
             exit 0
           fi
 
-          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
-            -H "Authorization: token $GH_TOKEN" \
+          echo "Checking team membership for user: $GITHUB_ACTOR"
+          echo "Using org: $ORG_NAME, team: $TEAM_SLUG"
+
+          RESPONSE=$(curl -s -H "Authorization: token $GH_TOKEN" \
             -H "Accept: application/vnd.github+json" \
             https://api.github.com/orgs/$ORG_NAME/teams/$TEAM_SLUG/memberships/${{ github.actor }})
 
-          if [[ "$RESPONSE" == "200" ]]; then
-            echo "User is in the dev1 team ✅"
+          echo "API Response: $RESPONSE"
+
+          if echo "$RESPONSE" | grep -q '"state": "active"'; then
+            echo "✅ User $GITHUB_ACTOR is in dev1 team"
             echo "is_member=true" >> $GITHUB_ENV
             echo "is_member=true" >> $GITHUB_OUTPUT
           else
             echo "❌ User $GITHUB_ACTOR is NOT in dev1 team and cannot deploy to PRD!"
             echo "is_member=false" >> $GITHUB_ENV
             echo "is_member=false" >> $GITHUB_OUTPUT
-            exit 1  # ❗ Fails the job only if the user selects PRD and is not in dev1
+            exit 1  # Fail the job only if the user selects PRD and is not in dev1
           fi
 
   deploy:
