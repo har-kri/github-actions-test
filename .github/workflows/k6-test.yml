@@ -1,0 +1,61 @@
+name: Run K6 Tests in K8s
+on:
+  workflow_dispatch:
+    inputs:
+      parallelism:
+        description: 'Number of parallel k6 test instances to run'
+        required: true
+        default: '4'
+        type: string
+env:
+  PARALLELISM: ${{ github.event.inputs.parallelism || '4' }}
+jobs:
+  run-k6-tests:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: devops/SSDC-2221-k6-k8s
+      - name: Setup kubectl
+        uses: ./.github/actions/setup-kubectl
+        with:
+          aws-region: us-east-1
+          role-to-assume: arn:aws:iam::211125421081:role/github-actions-role
+          eks-cluster-name: monocle-dev
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.16.0'
+      - name: Install esbuild and create bundle
+        run: |
+          # Install esbuild globally
+          npm install -g esbuild
+          # Run the build script
+          cd e2e/k6/http
+          chmod +x build.sh
+          ./build.sh
+      - name: Create namespace and ConfigMap
+        run: |
+          NAMESPACE="k6-test-$(date +%Y%m%d-%H%M%S)"
+          echo "NAMESPACE=$NAMESPACE" >> $GITHUB_ENV
+          kubectl create namespace $NAMESPACE
+          kubectl create configmap k6-test-cm --from-file=bundle.js=e2e/k6/http/dist/bundle.js -n $NAMESPACE
+      - name: Run K6 Test
+        run: |
+          kubectl apply -f - <<EOF
+          apiVersion: k6.io/v1alpha1
+          kind: TestRun
+          metadata:
+            name: k6-test
+            namespace: $NAMESPACE
+          spec:
+            parallelism: ${{ env.PARALLELISM }}
+            script:
+              configMap:
+                name: k6-test-cm
+                file: bundle.js
+          EOF
