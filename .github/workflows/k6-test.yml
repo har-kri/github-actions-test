@@ -5,10 +5,7 @@ on:
       parallelism:
         description: 'Number of parallel k6 test instances to run'
         required: true
-        default: '4'
         type: string
-env:
-  PARALLELISM: ${{ github.event.inputs.parallelism || '4' }}
 jobs:
   run-k6-tests:
     runs-on: ubuntu-latest
@@ -53,7 +50,7 @@ jobs:
             name: k6-test
             namespace: $NAMESPACE
           spec:
-            parallelism: ${{ env.PARALLELISM }}
+            parallelism: ${{ github.event.inputs.parallelism }}
             script:
               configMap:
                 name: k6-test-cm
