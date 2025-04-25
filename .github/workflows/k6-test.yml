@@ -2,6 +2,11 @@ name: Run K6 Tests in K8s
 on:
   workflow_dispatch:
     inputs:
+      branch_notice:
+        description: '⚠️ IMPORTANT: Switch to branch devops/SSDC-2221-k6-k8s before running this workflow'
+        type: boolean
+        required: true
+        default: true
       parallelism:
         description: 'Number of parallel k6 test instances to run'
         required: true
