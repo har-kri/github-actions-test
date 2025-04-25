@@ -19,8 +19,6 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
-        with:
-          ref: devops/SSDC-2221-k6-k8s
       - name: Setup kubectl
         uses: ./.github/actions/setup-kubectl
         with:
