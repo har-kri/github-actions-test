@@ -35,15 +35,15 @@ on:
         type: boolean
         default: true
       import-sql-s3-bucket:
-        description: 'S3 Bucket Name (optional - for SQL import, indigo-dev only)'
+        description: 'S3 Bucket Name (for SQL import)'
         type: string
         required: false
       import-sql-s3-key:
-        description: 'S3 Key/Path for SQL dump file (optional - e.g., IndigoCatalog.sql, indigo-dev only)'
+        description: 'S3 Key/Path for SQL dump file (e.g., IndigoCatalog.sql)'
         type: string
         required: false
       import-sql-database:
-        description: 'Target database name (optional - catalog, auth, cart, etc., indigo-dev only)'
+        description: 'Target database name (catalog, auth, cart, etc., indigo-dev only)'
         type: choice
         required: false
         default: 'catalog'
