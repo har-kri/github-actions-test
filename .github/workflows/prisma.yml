@@ -1,0 +1,112 @@
+name: Manual Deploy
+run-name: Manual Deploy (${{ inputs.environment }})
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment'
+        type: choice
+        default: 'indigo-dev'
+        required: true
+        options:
+          - 'indigo-dev'
+          - 'indigo-stg'
+          - 'indigo-uat'
+          - 'monocle-dev'
+          - 'monocle-stg'
+          - 'monocle-uat'
+      tag-type:
+        description: 'Tag Type'
+        type: choice
+        default: 'sha'
+        options:
+          - 'sha'
+          - 'release'
+      prisma-operation:
+        description: 'Prisma Operation'
+        type: choice
+        default: 'reset'
+        options:
+          - 'push'
+          - 'reset'
+          - 'deploy'
+      prisma-seed:
+        description: 'Prisma Seed'
+        type: boolean
+        default: true
+      import-sql-s3-bucket:
+        description: 'S3 Bucket Name (optional - for SQL import, indigo-dev only)'
+        type: string
+        required: false
+      import-sql-s3-key:
+        description: 'S3 Key/Path for SQL dump file (optional - e.g., IndigoCatalog.sql, indigo-dev only)'
+        type: string
+        required: false
+      import-sql-database:
+        description: 'Target database name (optional - catalog, auth, cart, etc., indigo-dev only)'
+        type: choice
+        required: false
+        default: 'catalog'
+        options:
+          - catalog
+          - auth
+          - cart
+          - customer
+          - external
+          - feature
+          - fhir
+          - fulfilment
+          - order
+          - organisation
+          - partner
+          - payment
+          - sse
+          - verification
+          - renewal
+          - user
+jobs:
+  check-env-allowed:
+    uses: ./.github/workflows/check-env-access.yml
+    with:
+      environment: ${{ inputs.environment }}
+    secrets: inherit
+  init:
+    needs: [ check-env-allowed ]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Show job information
+        uses: ./.github/actions/show-job-info
+        with:
+          input-context: '${{ toJSON(inputs) }}'
+  build-backend:
+    needs: [init]
+    uses: ./.github/workflows/docker-build-backend.yml
+    with:
+      environment: ${{ inputs.environment }}
+      tag-type: ${{ inputs.tag-type }}
+    secrets: inherit
+  deploy:
+    needs: [build-backend]
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: ${{ inputs.environment }}
+      tag-type: ${{ inputs.tag-type }}
+      prisma-operation: ${{ inputs.prisma-operation }}
+      prisma-seed: ${{ inputs.prisma-seed }}
+      import-sql-s3-bucket: ${{ inputs.import-sql-s3-bucket }}
+      import-sql-s3-key: ${{ inputs.import-sql-s3-key }}
+      import-sql-database: ${{ inputs.import-sql-database }}
+    secrets: inherit
+  send-notification:
+    if: always()
+    needs: [init, build-backend, deploy]
+    uses: ./.github/workflows/send-sns-notification.yml
+    with:
+      environment: ${{ inputs.environment }}
+      subject: Manual Deploy ${{ (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')) && 'FAILURE' || 'SUCCESS' }}
+      message: "Run Information: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+    secrets: inherit
