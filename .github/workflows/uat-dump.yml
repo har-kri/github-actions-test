@@ -1,13 +1,27 @@
-name: Refresh DataTesting DB from UAT
+name: Upload UAT DB Dump to S3
 on:
   workflow_dispatch:
+    inputs:
+      target-environment:
+        description: "Target environment (dev or stg)"
+        type: choice
+        required: true
+        options:
+          - dev
+          - stg
 jobs:
-  dump-uat-db:
-    name: Dump UAT Database
+  check-env-allowed:
+    uses: ./.github/workflows/check-env-access.yml
+    with:
+      environment: indigo-${{ inputs.target-environment }}
+    secrets: inherit
+  dump-and-upload:
+    needs: [check-env-allowed]
+    name: Dump UAT Database and Upload to S3 (${{ inputs.target-environment }})
     runs-on:
       - codebuild-indigo-uat-gha-${{ github.run_id }}-${{ github.run_attempt }}
-      - instance-size:${{ vars.REFRESH_DATA_TESTING_DB_INSTANCE_SIZE || 'small' }}
-    timeout-minutes: 20
+      - instance-size:${{ vars.UPLOAD_UAT_DB_DUMP_INSTANCE_SIZE || 'small' }}
+    timeout-minutes: 30
     environment: indigo-uat
     permissions:
       id-token: write
@@ -17,9 +31,11 @@ jobs:
         uses: actions/checkout@v4
       - name: Show job information
         uses: ./.github/actions/show-job-info
+        with:
+          input-context: '${{ toJSON(inputs) }}'
       - name: Install MySQL client
         run: sudo dnf install -y mariadb105
-      - name: Configure UAT AWS credentials
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: ${{ vars.AWS_REGION }}
@@ -27,7 +43,31 @@ jobs:
       - name: Get AWS vars and secrets
         uses: ./.github/actions/get-aws-vars-secrets
         with:
-          config-dir: .github/environment/indigo/refresh-data-testing-db
+          config-dir: .github/environment/indigo/upload-uat-db-dump-to-s3
+      - name: Get target environment S3 bucket name
+        id: target-s3-bucket
+        run: |
+          set -euo pipefail
+          TARGET_ENV="${{ inputs.target-environment }}"
+          PROJECT_ID="indigo"
+          BUCKET_PREFIX="${PROJECT_ID}-${TARGET_ENV}-db-dumps-"
+          
+          echo "Finding S3 bucket for target environment: $TARGET_ENV"
+          echo "Looking for bucket matching pattern: ${BUCKET_PREFIX}*"
+          
+          # List S3 buckets matching the pattern
+          BUCKET_NAME=$(aws s3api list-buckets \
+            --query "Buckets[?starts_with(Name, '${BUCKET_PREFIX}')].Name" \
+            --output text | head -n1)
+          
+          if [[ -z "$BUCKET_NAME" ]]; then
+            echo "::error::Could not find S3 bucket matching pattern: ${BUCKET_PREFIX}*"
+            echo "Please ensure the S3 bucket exists for the target environment"
+            exit 1
+          fi
+          
+          echo "Found S3 bucket: $BUCKET_NAME"
+          echo "bucket_name=${BUCKET_NAME}" >> $GITHUB_OUTPUT
       - name: Get UAT DB details
         id: uat-db
         run: |
@@ -44,8 +84,11 @@ jobs:
             exit 1
           fi
       - name: Dump UAT databases
+        id: dump-db
         run: |
           set -euo pipefail
+          TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
+          DUMP_FILE="uat-dump_${TIMESTAMP}.sql"
           MYSQL_HOST="${{ steps.uat-db.outputs.host }}"
           MYSQL_PORT="${{ steps.uat-db.outputs.port }}"
           MYSQL_USER="${{ steps.uat-db.outputs.user }}"
@@ -61,80 +104,25 @@ jobs:
           echo "Found databases: $DATABASES"
           echo "Dumping databases..."
           mysqldump -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASS" \
-            --single-transaction --databases $DATABASES > ./uat_dump.sql
-          echo "Compressing dump..."
-          gzip ./uat_dump.sql
-          SIZE=$(du -h ./uat_dump.sql.gz | cut -f1)
+            --single-transaction --databases $DATABASES > "./${DUMP_FILE}"
+          SIZE=$(du -h "./${DUMP_FILE}" | cut -f1)
           echo "✅ Dump completed: $SIZE"
-      - name: Upload dump artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: uat-db-dump
-          path: ./uat_dump.sql.gz
-          retention-days: 1
-  restore-dev:
-    needs: [dump-uat-db]
-    name: Restore to DataTesting
-    runs-on:
-      - codebuild-indigo-dev-gha-${{ github.run_id }}-${{ github.run_attempt }}
-      - instance-size:${{ vars.REFRESH_DATA_TESTING_DB_INSTANCE_SIZE || 'small' }}
-    timeout-minutes: 20
-    environment: indigo-dev
-    permissions:
-      id-token: write
-      contents: read
-      actions: write
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-      - name: Show job information
-        uses: ./.github/actions/show-job-info
-      - name: Install MySQL client
-        run: sudo dnf install -y mariadb105
-      - name: Download dump artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: uat-db-dump
-      - name: Configure DEV AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-region: ${{ vars.AWS_REGION }}
-          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-role
-      - name: Get AWS vars and secrets
-        uses: ./.github/actions/get-aws-vars-secrets
-        with:
-          config-dir: .github/environment/indigo/refresh-data-testing-db
-      - name: Get DEV DB details
-        id: dev-db
+          echo "dump_file=${DUMP_FILE}" >> $GITHUB_OUTPUT
+      - name: Upload to S3
         run: |
           set -euo pipefail
-          DB_URL="${{ env.TARGET_DATABASE_URL }}"
-          if [[ "$DB_URL" =~ ^mysql://([^:]+):([^@]+)@([^:/]+)(:([0-9]+))? ]]; then
-            echo "::add-mask::${BASH_REMATCH[2]}"
-            echo "host=${BASH_REMATCH[3]}" >> $GITHUB_OUTPUT
-            echo "port=${BASH_REMATCH[5]:-3306}" >> $GITHUB_OUTPUT
-            echo "user=${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT
-            echo "password=${BASH_REMATCH[2]}" >> $GITHUB_OUTPUT
-          else
-            echo "::error::Failed to parse DEV database URL"
-            exit 1
-          fi
-      - name: Restore to DataTesting
-        run: |
-          set -euo pipefail
-          MYSQL_HOST="${{ steps.dev-db.outputs.host }}"
-          MYSQL_PORT="${{ steps.dev-db.outputs.port }}"
-          MYSQL_USER="${{ steps.dev-db.outputs.user }}"
-          MYSQL_PASS="${{ steps.dev-db.outputs.password }}"
-          echo "DataTesting Host: $MYSQL_HOST:$MYSQL_PORT"
-          echo "Unzipping and restoring databases..."
-          gunzip -c ./uat_dump.sql.gz | mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASS"
-          echo "✅ Restore completed"
-      - name: Delete artifact
-        if: always()
-        uses: geekyeggo/delete-artifact@v5
-        with:
-          name: uat-db-dump
+          DUMP_FILE="${{ steps.dump-db.outputs.dump_file }}"
+          S3_KEY="${DUMP_FILE}"
+          S3_BUCKET="${{ steps.target-s3-bucket.outputs.bucket_name }}"
+          echo "Uploading UAT DB dump to s3://${S3_BUCKET}/${S3_KEY}..."
+          aws s3 cp "./${DUMP_FILE}" "s3://${S3_BUCKET}/${S3_KEY}"
+          SIZE=$(du -h "./${DUMP_FILE}" | cut -f1)
+          echo "✅ Successfully uploaded UAT DB dump to S3"
+          echo "Bucket: ${S3_BUCKET}"
+          echo "Key: ${S3_KEY}"
+          echo "Size: ${SIZE}"
+          echo "Target Environment: ${{ inputs.target-environment }}"
       - name: Cleanup
         if: always()
-        run: rm -f ./uat_dump.sql.gz
+        run: rm -f ./uat-dump_*.sql
+
