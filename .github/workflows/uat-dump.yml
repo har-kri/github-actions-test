@@ -1,0 +1,140 @@
+name: Refresh DataTesting DB from UAT
+on:
+  workflow_dispatch:
+jobs:
+  dump-uat-db:
+    name: Dump UAT Database
+    runs-on:
+      - codebuild-indigo-uat-gha-${{ github.run_id }}-${{ github.run_attempt }}
+      - instance-size:${{ vars.REFRESH_DATA_TESTING_DB_INSTANCE_SIZE || 'small' }}
+    timeout-minutes: 20
+    environment: indigo-uat
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Show job information
+        uses: ./.github/actions/show-job-info
+      - name: Install MySQL client
+        run: sudo dnf install -y mariadb105
+      - name: Configure UAT AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-role
+      - name: Get AWS vars and secrets
+        uses: ./.github/actions/get-aws-vars-secrets
+        with:
+          config-dir: .github/environment/indigo/refresh-data-testing-db
+      - name: Get UAT DB details
+        id: uat-db
+        run: |
+          set -euo pipefail
+          DB_URL="${{ env.SOURCE_DATABASE_URL }}"
+          if [[ "$DB_URL" =~ ^mysql://([^:]+):([^@]+)@([^:/]+)(:([0-9]+))?/([^/?]+) ]]; then
+            echo "::add-mask::${BASH_REMATCH[2]}"
+            echo "host=${BASH_REMATCH[3]}" >> $GITHUB_OUTPUT
+            echo "port=${BASH_REMATCH[5]:-3306}" >> $GITHUB_OUTPUT
+            echo "user=${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT
+            echo "password=${BASH_REMATCH[2]}" >> $GITHUB_OUTPUT
+          else
+            echo "::error::Failed to parse UAT database URL"
+            exit 1
+          fi
+      - name: Dump UAT databases
+        run: |
+          set -euo pipefail
+          MYSQL_HOST="${{ steps.uat-db.outputs.host }}"
+          MYSQL_PORT="${{ steps.uat-db.outputs.port }}"
+          MYSQL_USER="${{ steps.uat-db.outputs.user }}"
+          MYSQL_PASS="${{ steps.uat-db.outputs.password }}"
+          echo "UAT Host: $MYSQL_HOST:$MYSQL_PORT"
+          echo "Finding databases matching indigo_* pattern..."
+          DATABASES=$(mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASS" \
+            -N -e "SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME LIKE 'indigo\\_%';" | tr '\n' ' ')
+          if [ -z "$DATABASES" ]; then
+            echo "::error::No databases found matching indigo_* pattern"
+            exit 1
+          fi
+          echo "Found databases: $DATABASES"
+          echo "Dumping databases..."
+          mysqldump -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASS" \
+            --single-transaction --databases $DATABASES > ./uat_dump.sql
+          echo "Compressing dump..."
+          gzip ./uat_dump.sql
+          SIZE=$(du -h ./uat_dump.sql.gz | cut -f1)
+          echo "✅ Dump completed: $SIZE"
+      - name: Upload dump artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: uat-db-dump
+          path: ./uat_dump.sql.gz
+          retention-days: 1
+  restore-dev:
+    needs: [dump-uat-db]
+    name: Restore to DataTesting
+    runs-on:
+      - codebuild-indigo-dev-gha-${{ github.run_id }}-${{ github.run_attempt }}
+      - instance-size:${{ vars.REFRESH_DATA_TESTING_DB_INSTANCE_SIZE || 'small' }}
+    timeout-minutes: 20
+    environment: indigo-dev
+    permissions:
+      id-token: write
+      contents: read
+      actions: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Show job information
+        uses: ./.github/actions/show-job-info
+      - name: Install MySQL client
+        run: sudo dnf install -y mariadb105
+      - name: Download dump artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: uat-db-dump
+      - name: Configure DEV AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-role
+      - name: Get AWS vars and secrets
+        uses: ./.github/actions/get-aws-vars-secrets
+        with:
+          config-dir: .github/environment/indigo/refresh-data-testing-db
+      - name: Get DEV DB details
+        id: dev-db
+        run: |
+          set -euo pipefail
+          DB_URL="${{ env.TARGET_DATABASE_URL }}"
+          if [[ "$DB_URL" =~ ^mysql://([^:]+):([^@]+)@([^:/]+)(:([0-9]+))? ]]; then
+            echo "::add-mask::${BASH_REMATCH[2]}"
+            echo "host=${BASH_REMATCH[3]}" >> $GITHUB_OUTPUT
+            echo "port=${BASH_REMATCH[5]:-3306}" >> $GITHUB_OUTPUT
+            echo "user=${BASH_REMATCH[1]}" >> $GITHUB_OUTPUT
+            echo "password=${BASH_REMATCH[2]}" >> $GITHUB_OUTPUT
+          else
+            echo "::error::Failed to parse DEV database URL"
+            exit 1
+          fi
+      - name: Restore to DataTesting
+        run: |
+          set -euo pipefail
+          MYSQL_HOST="${{ steps.dev-db.outputs.host }}"
+          MYSQL_PORT="${{ steps.dev-db.outputs.port }}"
+          MYSQL_USER="${{ steps.dev-db.outputs.user }}"
+          MYSQL_PASS="${{ steps.dev-db.outputs.password }}"
+          echo "DataTesting Host: $MYSQL_HOST:$MYSQL_PORT"
+          echo "Unzipping and restoring databases..."
+          gunzip -c ./uat_dump.sql.gz | mysql -h "$MYSQL_HOST" -P "$MYSQL_PORT" -u "$MYSQL_USER" -p"$MYSQL_PASS"
+          echo "✅ Restore completed"
+      - name: Delete artifact
+        if: always()
+        uses: geekyeggo/delete-artifact@v5
+        with:
+          name: uat-db-dump
+      - name: Cleanup
+        if: always()
+        run: rm -f ./uat_dump.sql.gz
